@@ -3,11 +3,13 @@ import time
 from enum import Enum
 
 import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
 
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection, WebSocketConnection  # noqa: F401
 from udacidrone.messaging import MsgID
-
+import visdom
 
 class States(Enum):
     MANUAL = 0
@@ -17,11 +19,39 @@ class States(Enum):
     LANDING = 4
     DISARMING = 5
 
+'''
+1. Activate Flying car conda environment
+source activate fcnd
 
+2. Start visualization server
+python -m visdom.server
+
+3. Go to webserver
+http://localhost:8097/
+'''
 class BackyardFlyer(Drone):
 
     def __init__(self, connection):
         super().__init__(connection)
+        self.v = visdom.Visdom()
+        assert self.v.check_connection()
+
+        # Plot NE
+        ne = np.array([self.local_position[0], self.local_position[1]]).reshape(1, -1)
+        self.ne_plot = self.v.scatter(ne, opts=dict(
+            title="Local position (north, east)",
+            xlabel='North',
+            ylabel='East'
+        ))
+
+        # Plot D
+        d = np.array([self.local_position[2]])
+        self.t = 0
+        self.d_plot = self.v.line(d, X=np.array([self.t]), opts=dict(
+            title="Altitude (meters)",
+            xlabel='Timestep',
+            ylabel='Down'
+        ))
         self.target_position = np.array([0.0, 0.0, 0.0])
         self.all_waypoints = []
         self.in_mission = True
@@ -34,6 +64,8 @@ class BackyardFlyer(Drone):
         self.register_callback(MsgID.LOCAL_POSITION, self.local_position_callback)
         self.register_callback(MsgID.LOCAL_VELOCITY, self.velocity_callback)
         self.register_callback(MsgID.STATE, self.state_callback)
+        self.register_callback(MsgID.LOCAL_POSITION, self.update_ne_plot)
+        self.register_callback(MsgID.LOCAL_POSITION, self.update_d_plot)
 
     def local_position_callback(self):
         """
@@ -47,11 +79,11 @@ class BackyardFlyer(Drone):
                 self.waypoint_transition()
 
             elif self.flight_state == States.WAYPOINT:
-                if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 1.0:
+                if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 0.1:
                     if len(self.all_waypoints) > 0:
                         self.waypoint_transition()
                     else:
-                        if np.linalg.norm(self.local_velocity[0:2]) < 1.0:
+                        if np.linalg.norm(self.local_velocity[0:2]) < 0.1:
                             self.landing_transition()
 
     def velocity_callback(self):
@@ -89,10 +121,10 @@ class BackyardFlyer(Drone):
         x_coord = 10.0
         y_coord = 10.0
         waypoints = []
-        waypoints.append(np.array([0, y_coord, -height]))
-        waypoints.append(np.array([x_coord, y_coord, -height]))
-        waypoints.append(np.array([x_coord, 0, -height]))
-        waypoints.append(np.array([0, 0, -height]))
+        waypoints.append(np.array([x_coord, 0.0, 3.0]))
+        waypoints.append(np.array([x_coord, y_coord, 3.0]))
+        waypoints.append(np.array([0.0, y_coord, 3.0]))
+        waypoints.append(np.array([0.0, 0.0, 3.0]))
         print(waypoints)
         return waypoints
 
@@ -133,6 +165,8 @@ class BackyardFlyer(Drone):
         self.target_position = self.all_waypoints.pop(0)
         print("target position", self.target_position)
         self.cmd_position(self.target_position[0], self.target_position[1], self.target_position[2], 0.0)
+        #self.cmd_attitude()
+        #cmd_attitude_rate(roll_rate, pitch_rate, yaw_rate, thrust)
         self.flight_state = States.WAYPOINT
 
     def landing_transition(self):
@@ -182,6 +216,16 @@ class BackyardFlyer(Drone):
         self.connection.start()
         print("Closing log file")
         self.stop_log()
+
+    def update_ne_plot(self):
+        ne = np.array([self.local_position[0], self.local_position[1]]).reshape(1, -1)
+        self.v.scatter(ne, win=self.ne_plot, update='append')
+
+    def update_d_plot(self):
+        d = np.array([self.local_position[2]])
+        # update timestep
+        self.t += 1
+        self.v.line(d, X=np.array([self.t]), win=self.d_plot, update='append')
 
 
 if __name__ == "__main__":
